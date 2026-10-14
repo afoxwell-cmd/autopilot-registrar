@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Autopilot Registrar (Client Sign-In)</title>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="https://alcdn.msauth.net/browser/2.36.0/js/msal-browser.min.js"></script>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; margin: 0; background: #f3f5f9; color: #1a2233; }
+  .wrap { max-width: 540px; margin: 0 auto; padding: 18px 14px 60px; }
+  h1 { font-size: 19px; margin: 0 0 2px; }
+  .sub { color: #5a6478; font-size: 13px; margin-bottom: 16px; }
+  .card { background: #fff; border: 1px solid #dfe4ee; border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  #video { width: 100%; border-radius: 10px; background: #10151f; display: block; object-fit: cover; aspect-ratio: 1; }
+  .btn { display: block; width: 100%; padding: 13px; border: 0; border-radius: 9px; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+  .btn-primary { background: #2458e6; color: #fff; }
+  .btn-ms { background: #fff; color: #1a2233; border: 1px solid #c9d1e0; }
+  .btn-ghost { background: #e8ecf5; color: #2458e6; }
+  .btn:disabled { opacity: .5; }
+  #status { margin-top: 12px; font-size: 13px; padding: 10px 12px; border-radius: 8px; display: none; }
+  .ok { background: #e6f6ec; color: #14663a; display: block !important; }
+  .err { background: #fdeaea; color: #8f1f1f; display: block !important; }
+  .info { background: #e8effc; color: #1c4a9c; display: block !important; }
+  input[type=text], textarea, select { width: 100%; padding: 11px 12px; border: 1px solid #c9d1e0; border-radius: 8px; font-size: 14px; font-family: inherit; }
+  textarea { min-height: 80px; font-family: Consolas, monospace; font-size: 12px; }
+  label { display: block; font-size: 12px; font-weight: 600; margin: 10px 0 4px; color: #44506a; }
+  .hidden { display: none !important; }
+  .kv { display: flex; justify-content: space-between; font-size: 13px; padding: 5px 0; border-bottom: 1px solid #eef1f7; gap: 10px; }
+  .kv b { color: #44506a; font-weight: 600; white-space: nowrap; }
+  .kv span { text-align: right; word-break: break-all; }
+  .note { font-size: 12px; color: #7a8398; line-height: 1.5; margin-top: 8px; }
+  .userchip { display: flex; align-items: center; gap: 10px; padding: 10px 0; }
+  .avatar { width: 36px; height: 36px; border-radius: 50%; background: #2458e6; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Autopilot Registrar</h1>
+  <div class="sub">Sign in with your work account, scan the QR on the device, and it registers into <b>your</b> organization's Intune.</div>
+
+  <!-- SIGN-IN -->
+  <div class="card" id="authCard">
+    <div id="signedOut">
+      <div class="note" style="margin-top:0">Step 1: sign in with your Microsoft 365 work account. The registration is performed under <b>your</b> identity - the MSP never holds your tenant's credentials.</div>
+      <button class="btn btn-ms" onclick="signIn()">&#128274; Sign in with Microsoft</button>
+      <div class="note">Requires: Intune Administrator role in your tenant, and one-time admin consent for the app.</div>
+    </div>
+    <div id="signedIn" class="hidden">
+      <div class="userchip"><div class="avatar" id="avatar"></div>
+        <div><div style="font-weight:600;font-size:14px" id="uName"></div>
+        <div style="font-size:12px;color:#7a8398" id="uUpn"></div></div></div>
+      <button class="btn btn-ghost" onclick="signOut()">Sign out</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <!-- SCAN -->
+  <div class="card hidden" id="scanCard">
+    <div style="font-weight:600;font-size:14px;margin-bottom:8px">Step 2: scan the device's QR code</div>
+    <div class="note" style="margin-top:0">On the new device in OOBE: press the <b>Windows key 5 times</b> &rarr; Autopilot menu &rarr; <b>assign device association</b>. Hold your phone over the QR.</div>
+    <video id="video" playsinline muted></video>
+    <canvas id="canvas" class="hidden"></canvas>
+    <button class="btn btn-primary" id="btnCam" onclick="startCamera()">Start camera</button>
+    <button class="btn btn-ghost" onclick="showManual()">Paste QR content manually</button>
+    <div class="hidden" id="manualBox">
+      <label>QR content</label>
+      <textarea id="mRaw" placeholder="devicelink:..."></textarea>
+      <button class="btn btn-primary" onclick="submitRaw()">Process payload</button>
+    </div>
+  </div>
+
+  <!-- CONFIRM -->
+  <div class="card hidden" id="confirmCard">
+    <div style="font-weight:600;font-size:14px;margin-bottom:8px">Step 3: confirm the device</div>
+    <div id="deviceFields"></div>
+    <div class="note" id="decodeNote"></div>
+    <label style="margin-top:12px">Optional: assign to a user (UPN)</label>
+    <input type="text" id="assignUpn" placeholder="user@yourdomain.com">
+    <button class="btn btn-primary" onclick="registerDevice()">Register into my tenant</button>
+    <button class="btn btn-ghost" onclick="resetScan()">Cancel</button>
+  </div>
+
+  <!-- RESULT -->
+  <div class="card hidden" id="doneCard">
+    <div style="font-size:44px;text-align:center" id="dIco"></div>
+    <div style="text-align:center;font-size:15px;line-height:1.5" id="dMsg"></div>
+    <button class="btn btn-ghost" onclick="resetScan()">Register another device</button>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:600;font-size:13px;margin-bottom:6px;">Why this design is safe</div>
+    <div class="note">
+      &#8226; <b>Your credentials, your tenant:</b> the app signs you in with your own work account and calls Microsoft Graph with a delegated token. The MSP holds no secrets for your tenant and cannot act without a signed-in authorized user.<br>
+      &#8226; <b>Auditable:</b> every registration appears in <b>your</b> Entra ID sign-in logs and Intune audit logs under the name of the person who scanned.<br>
+      &#8226; <b>Revoke anytime:</b> your admin can revoke consent or block the app in Entra ID enterprise applications.<br>
+      &#8226; <b>TPM-backed:</b> the QR identity is only half of the proof - the physical device must present its TPM private key during OOBE, so a copied payload is useless.
+    </div>
+  </div>
+</div>
+
+<script>
+  // ================= MSAL CONFIG =================
+  // Replace clientId with YOUR app registration (multi-tenant, "Accounts in any
+  // organizational directory"). Redirect URI must be EXACTLY the HTTPS origin
+  // where this page is hosted. Delegated permission needed:
+  // DeviceManagementServiceConfig.ReadWrite.All (requires one-time admin consent
+  // per tenant; the signed-in user needs the Intune Administrator role).
+  var msalConfig = {
+    auth: {
+      clientId: 'YOUR-APP-CLIENT-ID',
+      authority: 'https://login.microsoftonline.com/common',
+      redirectUri: location.origin + location.pathname
+    },
+    cache: { cacheLocation: 'sessionStorage' }
+  };
+  var graphScopes = ['https://graph.microsoft.com/DeviceManagementServiceConfig.ReadWrite.All'];
+  var myMsal = null, account = null, lastPayload = null, lastDecoded = null;
+  var stream = null, scanning = false;
+
+  try { myMsal = new msal.PublicClientApplication(msalConfig); } catch (e) {}
+
+  function setStatus(cls, msg) { var s = document.getElementById('status'); s.className = cls; s.textContent = msg; }
+
+  async function signIn() {
+    if (!myMsal) { setStatus('err', 'MSAL failed to load (offline preview). Host the page at a real HTTPS origin for sign-in to work.'); return; }
+    try {
+      var result = await myMsal.loginPopup({ scopes: graphScopes });
+      account = result.account;
+      showAccount();
+      // fetch display name
+      try {
+        var tok = await myMsal.acquireTokenSilent({ scopes: ['User.Read'], account: account });
+        var me = await fetch('https://graph.microsoft.com/v1.0/me', { headers: { Authorization: 'Bearer ' + tok.accessToken } }).then(function(r){ return r.json(); });
+        document.getElementById('uName').textContent = me.displayName || 'Signed in';
+      } catch (e) {}
+      document.getElementById('scanCard').className = 'card';
+      setStatus('ok', 'Signed in. Ready to scan.');
+    } catch (e) {
+      if (e.errorMessage && /consent|AADSTS/i.test(e.errorMessage)) {
+        setStatus('err', 'Sign-in blocked: ' + e.errorMessage + ' Your admin may need to grant consent for this app first.');
+      } else {
+        setStatus('err', 'Sign-in failed: ' + (e.errorMessage || e.message || e));
+      }
+    }
+  }
+
+  function showAccount() {
+    document.getElementById('signedOut').className = 'hidden';
+    document.getElementById('signedIn').className = '';
+    document.getElementById('uUpn').textContent = account.username;
+    document.getElementById('avatar').textContent = (account.name || account.username)[0].toUpperCase();
+  }
+
+  function signOut() {
+    if (myMsal && account) { myMsal.logoutPopup({ account: account }); }
+    account = null;
+    document.getElementById('signedIn').className = 'hidden';
+    document.getElementById('signedOut').className = '';
+    document.getElementById('scanCard').className = 'card hidden';
+  }
+
+  async function getToken() {
+    return (await myMsal.acquireTokenSilent({ scopes: graphScopes, account: account })).accessToken;
+  }
+
+  // ================= CAMERA / QR =================
+  async function startCamera() {
+    var btn = document.getElementById('btnCam'); btn.disabled = true;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      var video = document.getElementById('video');
+      video.srcObject = stream; await video.play();
+      scanning = true; requestAnimationFrame(tick);
+    } catch (e) {
+      btn.disabled = false;
+      setStatus('err', 'Camera unavailable (' + e.message + '). Use manual paste.');
+      showManual();
+    }
+  }
+
+  function tick() {
+    if (!scanning) return;
+    var video = document.getElementById('video'), canvas = document.getElementById('canvas');
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+      var ctx = canvas.getContext('2d'); ctx.drawImage(video, 0, 0);
+      try {
+        var img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        var code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
+        if (code && code.data) { stopCamera(); handleQr(code.data); return; }
+      } catch (e) {}
+    }
+    requestAnimationFrame(tick);
+  }
+
+  function stopCamera() { scanning = false; if (stream) { stream.getTracks().forEach(function(t){t.stop();}); stream = null; } }
+  function showManual() { document.getElementById('manualBox').className = ''; }
+  function submitRaw() { var v = document.getElementById('mRaw').value.trim(); if (v) handleQr(v); }
+
+  // ================= DEVICELINK DECODE =================
+  function extractToken(text) {
+    var tokens = text.match(/[A-Za-z0-9_\-]{40,}/g) || [];
+    tokens.sort(function(a,b){ return b.length - a.length; });
+    return tokens[0] || null;
+  }
+  function b64urlToBytes(tok) {
+    var b64 = tok.replace(/-/g,'+').replace(/_/g,'/');
+    while (b64.length % 4) b64 += '=';
+    var bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  async function decompress(bytes, format) {
+    var ds = new DecompressionStream(format);
+    var s = new Blob([bytes]).stream().pipeThrough(ds);
+    return new TextDecoder().decode(await new Response(s).arrayBuffer());
+  }
+  async function parseDeviceLink(raw) {
+    var token = extractToken(raw);
+    if (!token) return { ok: false, reason: 'No base64 payload found in the QR content.' };
+    var bytes = b64urlToBytes(token);
+    var formats = ['deflate-raw', 'deflate', 'gzip'];
+    for (var i = 0; i < formats.length; i++) {
+      try {
+        var obj = JSON.parse(await decompress(bytes, formats[i]));
+        return { ok: true, data: obj, token: token, method: formats[i] };
+      } catch (e) {}
+    }
+    try { return { ok: true, data: JSON.parse(new TextDecoder().decode(bytes)), token: token, method: 'none' }; } catch (e) {}
+    return { ok: false, reason: 'Could not decode client-side; the raw payload is preserved.', token: token };
+  }
+  function field(obj, names) {
+    for (var i = 0; i < names.length; i++) {
+      var k = Object.keys(obj).find(function(x){ return x.toLowerCase() === names[i].toLowerCase(); });
+      if (k && obj[k]) return String(obj[k]);
+    }
+    return null;
+  }
+
+  async function handleQr(text) {
+    if (/^WIFI:/i.test(text)) { setStatus('err', 'That is the OOBE Wi-Fi QR, not the association QR. Choose "assign device association" in the Autopilot menu.'); return; }
+    var r = await parseDeviceLink(text);
+    lastPayload = text; lastDecoded = r;
+    var box = document.getElementById('deviceFields'); box.innerHTML = '';
+    if (r.ok) {
+      var d = r.data;
+      [['Serial number', field(d, ['serialNumber','serial'])],
+       ['Manufacturer',  field(d, ['manufacturer'])],
+       ['Model',         field(d, ['model','productName'])],
+       ['DeviceLinkId',  field(d, ['deviceLinkId','id','linkId'])]
+      ].forEach(function(p){ if (p[1]) box.innerHTML += '<div class="kv"><b>' + p[0] + '</b><span>' + p[1] + '</span></div>'; });
+      document.getElementById('decodeNote').textContent = 'Decoded (' + r.method + '). Verify the serial matches the device in front of you.';
+    } else {
+      box.innerHTML = '<div class="kv"><b>Status</b><span>Client-side decode failed - raw payload preserved</span></div>';
+      document.getElementById('decodeNote').textContent = r.reason;
+    }
+    document.getElementById('scanCard').className = 'card hidden';
+    document.getElementById('confirmCard').className = 'card';
+  }
+
+  // ================= GRAPH REGISTRATION =================
+  async function registerDevice() {
+    document.getElementById('confirmCard').className = 'card hidden';
+    document.getElementById('doneCard').className = 'card';
+    document.getElementById('dIco').textContent = '...';
+    document.getElementById('dMsg').textContent = 'Registering in your tenant...';
+    try {
+      var token = await getToken();
+      var upn = document.getElementById('assignUpn').value.trim();
+      var body = {
+        '@odata.type'      : '#microsoft.graph.importedWindowsAutopilotDeviceIdentity',
+        serialNumber       : lastDecoded.ok ? (field(lastDecoded.data, ['serialNumber','serial']) || '') : '',
+        hardwareIdentifier : lastDecoded.ok ? (field(lastDecoded.data, ['hardwareHash','hardwareIdentifier']) || lastDecoded.token) : lastDecoded.token,
+        groupTag           : '',
+        assignedUserPrincipalName: upn || null
+      };
+      var res = await fetch('https://graph.microsoft.com/v1.0/deviceManagement/importedWindowsAutopilotDeviceIdentities/import', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ importedWindowsAutopilotDeviceIdentities: [body] })
+      });
+      var ok = res.ok;
+      var txt = await res.text();
+      document.getElementById('dIco').textContent = ok ? '\u2714' : '\u2716';
+      document.getElementById('dIco').style.color = ok ? '#14663a' : '#b3261e';
+      document.getElementById('dMsg').textContent = ok
+        ? 'Device registered into your tenant' + (upn ? ' and assigned to ' + upn : '') + '. On the device, select Next in the Autopilot menu to complete association.'
+        : 'Graph returned ' + res.status + ': ' + txt.substring(0, 300);
+    } catch (e) {
+      document.getElementById('dIco').textContent = '\u2716';
+      document.getElementById('dIco').style.color = '#b3261e';
+      document.getElementById('dMsg').textContent = 'Failed: ' + (e.message || e);
+    }
+  }
+
+  function resetScan() {
+    stopCamera();
+    document.getElementById('doneCard').className = 'card hidden';
+    document.getElementById('confirmCard').className = 'card hidden';
+    document.getElementById('scanCard').className = 'card';
+    document.getElementById('btnCam').disabled = false;
+  }
+</script>
+</body>
+</html>
